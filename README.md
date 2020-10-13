@@ -5,4 +5,5 @@ Xcode Source Editor Extension
 
 ## 使用
 1.选中一个或多个属性，选择Editor->HYExtension->Generate Property Getter，即可生成getter。
+
 2.选中某个类名，选择Editor->HYExtension->Import Header，即可导入头文件。
