@@ -43,22 +43,25 @@ extension SourceEditorCommand {
         
         let currentLine = lines[start.line]
         let range = NSRange(location: start.column, length: end.column - start.column)
-        let headerName = (currentLine as NSString).substring(with: range)
+        var headerName = (currentLine as NSString).substring(with: range)
         
-        //规则校验
         do {
-            let pattern = "^[a-z|A-Z|_](\\w+)$"
+            //规则校验
+            let pattern = "^[<|a-z|A-Z|_][\\w|+|/|\\.]*[>|a-z|A-Z|\\d]$"
             let regex = try NSRegularExpression(pattern: pattern, options: .caseInsensitive)
             let matchs = regex.matches(in: headerName, options: .reportProgress, range: NSRange(location: 0, length: headerName.count))
             if matchs.count == 0 {
                 return
             }
             
+            if !headerName.contains(".h") {
+                headerName += ".h"
+            }
             //查找插入位置
             var insertTargetLine = NSNotFound
             for (i, line) in lines.enumerated() {
                 if line.contains("#import") {
-                    if line.contains("\(headerName).h") {
+                    if line.contains(headerName) {
                         return
                     }
                     insertTargetLine = i + 1
@@ -69,7 +72,11 @@ extension SourceEditorCommand {
             }
             
             if insertTargetLine != NSNotFound {
-                invocation.buffer.lines.insert("#import \"\(headerName).h\"", at: insertTargetLine)
+                if headerName.hasPrefix("<") && headerName.hasSuffix(">") {
+                    invocation.buffer.lines.insert("#import \(headerName)", at: insertTargetLine)
+                } else {
+                    invocation.buffer.lines.insert("#import \"\(headerName)\"", at: insertTargetLine)
+                }
             }
         } catch _ {
             
@@ -118,21 +125,61 @@ extension SourceEditorCommand {
             return
         }
         
-        //获取插入位置
-        var insertTargetLine = 0
-        var findEndLine = false
-        for (i, line) in lines.reversed().enumerated() {
-            if line.contains("@end") {
-                findEndLine = true
+        //获取类名
+        var findClassName = ""
+        for i in (0..<startLine).reversed() {
+            let line = lines[i].replacingOccurrences(of: " ", with: "")
+            if !line.contains("@interface") {
                 continue
             }
-            if findEndLine && line.trimmingCharacters(in: .whitespacesAndNewlines).count > 0 {
-                insertTargetLine = lines.count - i + 1
+            
+            var suffixRange = (line as NSString).range(of: "(")
+            if suffixRange.location == NSNotFound {
+                suffixRange = (line as NSString).range(of: ":")
+            }
+            if suffixRange.location == NSNotFound {
+                return
+            }
+            
+            let startLocation = "@interface".count
+            let subRange = NSRange(location: startLocation, length: suffixRange.location - startLocation)
+            findClassName = (line as NSString).substring(with: subRange)
+            break
+        }
+        if findClassName.count == 0 {
+            return
+        }
+        
+        //获取插入位置
+        var insertTargetLine = 0
+        var didFindClassImpl = false
+        var needBlackLine = false
+        for (i, line) in lines.enumerated() {
+            let line = line.replacingOccurrences(of: " ", with: "")
+            print(line)
+            if line.hasPrefix("@implementation\(findClassName)") {
+                didFindClassImpl = true;
+                continue
+            }
+            if !didFindClassImpl {
+                continue
+            }
+            
+            if line.hasPrefix("@end") {
+                for j in (0..<i).reversed() {
+                    let targetLine = lines[j].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if targetLine.count > 0 {
+                        insertTargetLine = j + 1
+                        needBlackLine = (j == i - 1)
+                        break
+                    }
+                }
                 break
             }
         }
         if insertTargetLine > 0 && insertTargetLine <= lines.count {
-            buffer.lines.insert(insertPropertyGetters.joined(), at: insertTargetLine)
+            let targetGetters = "\n" + insertPropertyGetters.joined(separator: "\n\n") + (needBlackLine ? "\n\n" : "\n")
+            buffer.lines.insert(targetGetters, at: insertTargetLine)
         }
     }
     
@@ -144,18 +191,25 @@ extension SourceEditorCommand {
         if !line.contains("@property") {
             return nil
         }
-        let range = (line as NSString).range(of: ")")
-        let subFromIndex = range.location == NSNotFound ? "@property".count : range.location + 1
-        var substring = (line as NSString).substring(from: subFromIndex)
-        substring = substring.replacingOccurrences(of: ";", with: "")
-        substring = substring.replacingOccurrences(of: "\n", with: "")
-        substring = substring.trimmingCharacters(in: .whitespacesAndNewlines)
+        var propertyLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixRange = (propertyLine as NSString).range(of: ")")
+        let suffixRange = (propertyLine as NSString).range(of: ";")
         
-        if !substring.contains("*") {
+        if suffixRange.location == NSNotFound {
             return nil
         }
         
-        let results = substring.components(separatedBy: "*")
+        let subFromIndex = prefixRange.location == NSNotFound ? "@property".count : prefixRange.location + 1
+        let subRange = NSRange(location: subFromIndex, length: suffixRange.location - subFromIndex)
+        propertyLine = (propertyLine as NSString).substring(with: subRange)
+        propertyLine = propertyLine.replacingOccurrences(of: "\n", with: "")
+        propertyLine = propertyLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if !propertyLine.contains("*") {
+            return nil
+        }
+        
+        let results = propertyLine.components(separatedBy: "*")
         if results.count != 2 {
             return nil
         }
@@ -170,15 +224,32 @@ extension SourceEditorCommand {
     
     func generateGetter(with className: String, ivarName: String) -> String? {
         switch className {
+        case "UITableView":
+            return UITableViewGetter(ivarName)
         case "UIImageView":
             return UIImageViewGetter(ivarName)
         case "UILabel":
             return UILabelGetter(ivarName)
         case "UIButton":
             return UIButtonGetter(ivarName)
+        case "UICollectionView":
+            return UICollectionViewGetter(ivarName)
         default:
             return CommonGetter(className, ivarName)
         }
+    }
+    
+    func UITableViewGetter(_ ivarName: String) -> String {
+        return """
+        - (UITableView *)\(ivarName) {
+            if (!_\(ivarName)) {
+                _\(ivarName) = [[UITableView alloc] initWithFrame:self.view.bounds];
+                _\(ivarName).dataSource = self;
+                _\(ivarName).delegate = self;
+            }
+            return _tableView;
+        }
+        """
     }
     
     func UIImageViewGetter(_ ivarName: String) -> String {
@@ -190,7 +261,6 @@ extension SourceEditorCommand {
             }
             return _\(ivarName);
         }
-        \n
         """
     }
     
@@ -206,7 +276,6 @@ extension SourceEditorCommand {
             }
             return _\(ivarName);
         }
-        \n
         """
     }
 
@@ -220,7 +289,20 @@ extension SourceEditorCommand {
             }
             return _\(ivarName);
         }
-        \n
+        """
+    }
+    
+    func UICollectionViewGetter(_ ivarName: String) -> String {
+        return """
+        - (UICollectionView *)\(ivarName) {
+            if (!_\(ivarName)) {
+                UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
+                _\(ivarName) = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:layout];
+                _\(ivarName).dataSource = self;
+                _\(ivarName).delegate = self;
+            }
+            return _\(ivarName);
+        }
         """
     }
     
@@ -232,7 +314,6 @@ extension SourceEditorCommand {
             }
             return _\(ivarName);
         }
-        \n
         """
     }
     
