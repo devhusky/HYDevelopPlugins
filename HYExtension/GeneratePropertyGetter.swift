@@ -188,6 +188,9 @@ extension SourceEditorCommand {
                 _\(ivarName).dataSource = self;
                 _\(ivarName).delegate = self;
                 [_\(ivarName) registerClass:[UITableViewCell class] forCellReuseIdentifier:NSStringFromClass(UITableViewCell.class)];
+                if (@available(iOS 11.0, *)) {
+                    _\(ivarName).contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+                }
             }
             return _tableView;
         }
@@ -200,6 +203,7 @@ extension SourceEditorCommand {
             if (!_\(ivarName)) {
                 _\(ivarName) = [[UIImageView alloc] init];
                 _\(ivarName).image = [UIImage imageNamed:@""];
+                _\(ivarName).contentMode = UIViewContentModeScaleAspectFit;
             }
             return _\(ivarName);
         }
